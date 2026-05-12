@@ -1,0 +1,35 @@
+name: Publish Report
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run tests (kensa output redirected into the workspace)
+        run: ./gradlew test
+        env:
+          JAVA_TOOL_OPTIONS: -Dkensa.output.root=${{ github.workspace }}/build
+
+      - name: Deploy report to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build/kensa-output
