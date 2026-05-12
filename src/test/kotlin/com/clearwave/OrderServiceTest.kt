@@ -126,6 +126,8 @@ class OrderServiceTest : ClearwaveSpringTest() {
 
     private fun aVoiceAndBroadbandOrderIsPlaced() = Action<ActionContext> { (fixtures, interactions) ->
         val tid = fixtures[trackingId]
+        openNetworkStub.register(tid, interactions)
+        fibreVisionStub.register(tid, interactions)
         val orderRequest = OrderRequest(
             customerId = fixtures[customerId],
             address = fixtures[serviceAddress],

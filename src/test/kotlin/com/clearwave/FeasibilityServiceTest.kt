@@ -129,8 +129,10 @@ class FeasibilityServiceTest : ClearwaveSpringTest() {
 
     // --- Action ---
 
-    private fun aFeasibilityCheckIsRequestedForTheServiceAddress() = Action<ActionContext> { (fixtures, _) ->
+    private fun aFeasibilityCheckIsRequestedForTheServiceAddress() = Action<ActionContext> { (fixtures, interactions) ->
         val tid = fixtures[trackingId]
+        openNetworkStub.register(tid, interactions)
+        fibreVisionStub.register(tid, interactions)
         val headers = HttpHeaders().apply {
             contentType = MediaType.APPLICATION_JSON
             set(TrackingId.HEADER, tid.toString())

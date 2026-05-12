@@ -1,6 +1,12 @@
 package com.clearwave.stubs
 
+import com.clearwave.support.TelecomsParty
 import com.clearwave.support.TrackingId
+import com.clearwave.support.TrackingRegistry
+import dev.kensa.spring.web.HttpCapturedRequest
+import dev.kensa.spring.web.HttpCapturedResponse
+import dev.kensa.state.CapturedInteractionBuilder.Companion.from
+import dev.kensa.state.CapturedInteractions
 import org.springframework.boot.SpringApplication
 import org.springframework.boot.SpringBootConfiguration
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration
@@ -24,11 +30,13 @@ import kotlin.concurrent.thread
 
 /**
  * Test stub for the FibreVision supplier (XML API). Boots as its own Spring Boot
- * application on a random port. Mirrors [OpenNetworkStub] but speaks XML.
+ * application on a random port. Mirrors [OpenNetworkStub] but speaks XML; uses the
+ * same trackingId-based capture pattern via [TrackingRegistry].
  */
 class FibreVisionStub : AutoCloseable {
 
     private val state = FibreVisionStubState()
+    private val registry = TrackingRegistry()
     private lateinit var context: ConfigurableWebServerApplicationContext
 
     val port: Int get() = context.webServer.port
@@ -38,6 +46,7 @@ class FibreVisionStub : AutoCloseable {
         app.setDefaultProperties(mapOf("server.port" to "0", "spring.main.banner-mode" to "off"))
         app.addInitializers(ApplicationContextInitializer<ConfigurableApplicationContext> { ctx ->
             ctx.beanFactory.registerSingleton("fibreVisionStubState", state)
+            ctx.beanFactory.registerSingleton("fibreVisionStubRegistry", registry)
         })
         context = app.run() as ConfigurableWebServerApplicationContext
     }
@@ -45,6 +54,15 @@ class FibreVisionStub : AutoCloseable {
     override fun close() {
         if (this::context.isInitialized) context.close()
     }
+
+    // --- Registration ---
+
+    fun register(trackingId: TrackingId, interactions: CapturedInteractions) =
+        registry.register(trackingId, interactions)
+
+    fun unregister(trackingId: TrackingId) = registry.unregister(trackingId)
+
+    // --- Priming ---
 
     fun primeFeasibility(trackingId: TrackingId, scenario: FeasibilityScenario) {
         state.feasibilityScenarios[trackingId.toString()] = scenario
@@ -82,6 +100,7 @@ internal class FibreVisionStubApplication {
 @RestController
 internal class FibreVisionStubController(
     private val state: FibreVisionStubState,
+    private val registry: TrackingRegistry,
     private val restTemplate: RestTemplate,
 ) {
 
@@ -91,24 +110,25 @@ internal class FibreVisionStubController(
         @RequestBody body: String,
     ): ResponseEntity<String> {
         state.feasibilityRequests[trackingId] = body
+        val interactions = registry.forTrackingId(trackingId)
+        captureRequest(interactions, TelecomsParty.FeasibilityService, "/api/feasibility/enquiry", body)
+
         val scenario = state.feasibilityScenarios[trackingId]
-            ?: return ResponseEntity.internalServerError().body("<Error><Message>no scenario primed</Message></Error>")
-        val responseBody = when (scenario) {
-            is FeasibilityScenario.Serviceable -> buildServiceable(scenario)
-            FeasibilityScenario.NotServiceable -> """<?xml version="1.0" encoding="UTF-8"?>
+        val (status, responseBody) = when (scenario) {
+            null -> 500 to "<Error><Message>no scenario primed</Message></Error>"
+            is FeasibilityScenario.Serviceable -> 200 to buildServiceable(scenario)
+            FeasibilityScenario.NotServiceable -> 200 to """<?xml version="1.0" encoding="UTF-8"?>
 <FeasibilityResponse>
     <Status>NOT_SERVICEABLE</Status>
     <Reason>No infrastructure available at this postcode</Reason>
 </FeasibilityResponse>"""
-            FeasibilityScenario.SupplierError -> """<?xml version="1.0" encoding="UTF-8"?>
+            FeasibilityScenario.SupplierError -> 500 to """<?xml version="1.0" encoding="UTF-8"?>
 <Error><Message>FibreVision system unavailable</Message></Error>"""
         }
         state.feasibilityResponses[trackingId] = responseBody
-        return if (scenario == FeasibilityScenario.SupplierError) {
-            ResponseEntity.internalServerError().header("Content-Type", "application/xml").body(responseBody)
-        } else {
-            ResponseEntity.ok().header("Content-Type", "application/xml").body(responseBody)
-        }
+        captureResponse(interactions, TelecomsParty.FeasibilityService, status, responseBody)
+
+        return responseFor(status, responseBody)
     }
 
     private fun buildServiceable(scenario: FeasibilityScenario.Serviceable): String {
@@ -135,8 +155,15 @@ $profilesXml
         @RequestBody body: String,
     ): ResponseEntity<String> {
         state.orderRequests[trackingId] = body
+        val interactions = registry.forTrackingId(trackingId)
+        captureRequest(interactions, TelecomsParty.OrderService, "/api/orders", body)
+
         val scenario = state.orderScenarios[trackingId]
-            ?: return ResponseEntity.internalServerError().body("<Error><Message>no scenario primed</Message></Error>")
+        if (scenario == null) {
+            val errBody = "<Error><Message>no scenario primed</Message></Error>"
+            captureResponse(interactions, TelecomsParty.OrderService, 500, errBody)
+            return ResponseEntity.internalServerError().body(errBody)
+        }
         val orderRef = "FV-${state.orderCounter.incrementAndGet().toString().padStart(5, '0')}"
         val responseBody = """<?xml version="1.0" encoding="UTF-8"?>
 <OrderResponse>
@@ -144,6 +171,7 @@ $profilesXml
     <Status>PENDING</Status>
 </OrderResponse>"""
         state.orderResponses[trackingId] = responseBody
+        captureResponse(interactions, TelecomsParty.OrderService, 200, responseBody)
 
         val callbackUrl = body.extractXml("NotificationCallbackUrl")
         if (callbackUrl != null) fireNotificationsAsync(orderRef, trackingId, callbackUrl, scenario)
@@ -169,6 +197,9 @@ $profilesXml
     <OrderRef>$orderRef</OrderRef>
     <Status>$status</Status>
 </OrderNotification>"""
+                val interactions = registry.forTrackingId(trackingId)
+                captureNotification(interactions, callbackUrl, xml)
+
                 val headers = HttpHeaders().apply {
                     contentType = MediaType.APPLICATION_XML
                     set("X-Tracking-Id", trackingId)
@@ -178,6 +209,69 @@ $profilesXml
                 } catch (_: Exception) { /* test torn down */ }
             }
         }
+    }
+
+    private fun captureRequest(
+        interactions: CapturedInteractions,
+        targetService: TelecomsParty,
+        uri: String,
+        body: String,
+    ) {
+        from(targetService)
+            .to(TelecomsParty.FibreVision)
+            .with(
+                HttpCapturedRequest(
+                    method = "POST",
+                    uri = uri,
+                    headers = mapOf("Content-Type" to listOf(MediaType.APPLICATION_XML_VALUE)),
+                    body = body,
+                ),
+                "HTTP POST $uri",
+            )
+            .applyTo(interactions)
+    }
+
+    private fun captureResponse(
+        interactions: CapturedInteractions,
+        targetService: TelecomsParty,
+        status: Int,
+        body: String,
+    ) {
+        from(TelecomsParty.FibreVision)
+            .to(targetService)
+            .with(
+                HttpCapturedResponse(
+                    status = status,
+                    headers = mapOf("Content-Type" to listOf(MediaType.APPLICATION_XML_VALUE)),
+                    body = body,
+                ),
+                "HTTP $status",
+            )
+            .applyTo(interactions)
+    }
+
+    private fun captureNotification(
+        interactions: CapturedInteractions,
+        callbackUrl: String,
+        body: String,
+    ) {
+        from(TelecomsParty.FibreVision)
+            .to(TelecomsParty.OrderService)
+            .with(
+                HttpCapturedRequest(
+                    method = "POST",
+                    uri = callbackUrl,
+                    headers = mapOf("Content-Type" to listOf(MediaType.APPLICATION_XML_VALUE)),
+                    body = body,
+                ),
+                "HTTP POST $callbackUrl",
+            )
+            .applyTo(interactions)
+    }
+
+    private fun responseFor(status: Int, body: String): ResponseEntity<String> {
+        val builder = if (status == 200) ResponseEntity.ok() else ResponseEntity.internalServerError()
+        return builder.header("Content-Type", MediaType.APPLICATION_XML_VALUE).body(body)
     }
 
     private fun String.extractXml(tag: String): String? =

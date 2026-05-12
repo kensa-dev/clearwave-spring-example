@@ -4,8 +4,14 @@ import com.clearwave.feasibility.OpenNetworkFeasibilityResponse
 import com.clearwave.feasibility.OpenNetworkProfile
 import com.clearwave.order.OpenNetworkNotification
 import com.clearwave.order.OpenNetworkOrderResponse
+import com.clearwave.support.TelecomsParty
 import com.clearwave.support.TrackingId
+import com.clearwave.support.TrackingRegistry
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import dev.kensa.spring.web.HttpCapturedRequest
+import dev.kensa.spring.web.HttpCapturedResponse
+import dev.kensa.state.CapturedInteractionBuilder.Companion.from
+import dev.kensa.state.CapturedInteractions
 import org.springframework.boot.SpringApplication
 import org.springframework.boot.SpringBootConfiguration
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration
@@ -29,12 +35,18 @@ import kotlin.concurrent.thread
 
 /**
  * Test stub for the OpenNetwork supplier (JSON API). Boots as its own Spring Boot
- * application on a random port. Tests prime scenarios per [TrackingId] via [primeFeasibility]
- * and [primeOrder]; the captured requests are accessible via [feasibilityRequestFor] etc.
+ * application on a random port.
+ *
+ * Tests prime scenarios per [TrackingId] via [primeFeasibility] / [primeOrder] and
+ * register their [CapturedInteractions] via [register] before the `whenever` action
+ * — the stub controller looks up the matching interactions by `X-Tracking-Id` header
+ * and records the inbound/outbound sequence diagram arrows automatically, regardless
+ * of which Tomcat thread is handling the request.
  */
 class OpenNetworkStub : AutoCloseable {
 
     private val state = OpenNetworkStubState()
+    private val registry = TrackingRegistry()
     private lateinit var context: ConfigurableWebServerApplicationContext
 
     val port: Int get() = context.webServer.port
@@ -44,6 +56,7 @@ class OpenNetworkStub : AutoCloseable {
         app.setDefaultProperties(mapOf("server.port" to "0", "spring.main.banner-mode" to "off"))
         app.addInitializers(ApplicationContextInitializer<ConfigurableApplicationContext> { ctx ->
             ctx.beanFactory.registerSingleton("openNetworkStubState", state)
+            ctx.beanFactory.registerSingleton("openNetworkStubRegistry", registry)
         })
         context = app.run() as ConfigurableWebServerApplicationContext
     }
@@ -51,6 +64,15 @@ class OpenNetworkStub : AutoCloseable {
     override fun close() {
         if (this::context.isInitialized) context.close()
     }
+
+    // --- Registration ---
+
+    fun register(trackingId: TrackingId, interactions: CapturedInteractions) =
+        registry.register(trackingId, interactions)
+
+    fun unregister(trackingId: TrackingId) = registry.unregister(trackingId)
+
+    // --- Priming ---
 
     fun primeFeasibility(trackingId: TrackingId, scenario: FeasibilityScenario) {
         state.feasibilityScenarios[trackingId.toString()] = scenario
@@ -88,6 +110,7 @@ internal class OpenNetworkStubApplication {
 @RestController
 internal class OpenNetworkStubController(
     private val state: OpenNetworkStubState,
+    private val registry: TrackingRegistry,
     private val restTemplate: RestTemplate,
 ) {
     private val mapper = jacksonObjectMapper()
@@ -98,34 +121,27 @@ internal class OpenNetworkStubController(
         @RequestBody body: String,
     ): ResponseEntity<String> {
         state.feasibilityRequests[trackingId] = body
-        val scenario = state.feasibilityScenarios[trackingId]
-            ?: return ResponseEntity.internalServerError().body("""{"error":"no scenario primed"}""")
-        return when (scenario) {
-            is FeasibilityScenario.Serviceable -> {
-                val responseBody = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(
-                    OpenNetworkFeasibilityResponse(
-                        available = true,
-                        profiles = scenario.profiles.map {
-                            OpenNetworkProfile(it.type, it.downloadSpeed, it.uploadSpeed, it.description)
-                        },
-                    ),
-                )
-                state.feasibilityResponses[trackingId] = responseBody
-                ResponseEntity.ok().header("Content-Type", "application/json").body(responseBody)
-            }
-            FeasibilityScenario.NotServiceable -> {
-                val responseBody = mapper.writeValueAsString(
-                    OpenNetworkFeasibilityResponse(available = false, reason = "No coverage at this postcode"),
-                )
-                state.feasibilityResponses[trackingId] = responseBody
-                ResponseEntity.ok().header("Content-Type", "application/json").body(responseBody)
-            }
-            FeasibilityScenario.SupplierError -> {
-                val responseBody = """{"error":"OpenNetwork system unavailable"}"""
-                state.feasibilityResponses[trackingId] = responseBody
-                ResponseEntity.internalServerError().header("Content-Type", "application/json").body(responseBody)
-            }
+        val interactions = registry.forTrackingId(trackingId)
+        captureRequest(interactions, TelecomsParty.FeasibilityService, "/api/feasibility/check", body, MediaType.APPLICATION_JSON_VALUE)
+
+        val (status, responseBody) = when (val scenario = state.feasibilityScenarios[trackingId]) {
+            null -> 500 to """{"error":"no scenario primed"}"""
+            is FeasibilityScenario.Serviceable -> 200 to mapper.writerWithDefaultPrettyPrinter().writeValueAsString(
+                OpenNetworkFeasibilityResponse(
+                    available = true,
+                    profiles = scenario.profiles.map {
+                        OpenNetworkProfile(it.type, it.downloadSpeed, it.uploadSpeed, it.description)
+                    },
+                ),
+            )
+            FeasibilityScenario.NotServiceable -> 200 to mapper.writeValueAsString(
+                OpenNetworkFeasibilityResponse(available = false, reason = "No coverage at this postcode"),
+            )
+            FeasibilityScenario.SupplierError -> 500 to """{"error":"OpenNetwork system unavailable"}"""
         }
+        state.feasibilityResponses[trackingId] = responseBody
+        captureResponse(interactions, TelecomsParty.FeasibilityService, status, responseBody, MediaType.APPLICATION_JSON_VALUE)
+        return responseFor(status, responseBody, MediaType.APPLICATION_JSON_VALUE)
     }
 
     @PostMapping("/api/orders", consumes = ["application/json"], produces = ["application/json"])
@@ -134,19 +150,23 @@ internal class OpenNetworkStubController(
         @RequestBody body: String,
     ): ResponseEntity<String> {
         state.orderRequests[trackingId] = body
+        val interactions = registry.forTrackingId(trackingId)
+        captureRequest(interactions, TelecomsParty.OrderService, "/api/orders", body, MediaType.APPLICATION_JSON_VALUE)
+
         val scenario = state.orderScenarios[trackingId]
-            ?: return ResponseEntity.internalServerError().body("""{"error":"no scenario primed"}""")
+        if (scenario == null) {
+            val errBody = """{"error":"no scenario primed"}"""
+            captureResponse(interactions, TelecomsParty.OrderService, 500, errBody, MediaType.APPLICATION_JSON_VALUE)
+            return ResponseEntity.internalServerError().body(errBody)
+        }
         val orderRef = "ON-${state.orderCounter.incrementAndGet().toString().padStart(5, '0')}"
         val responseBody = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(
             OpenNetworkOrderResponse(orderRef = orderRef, status = "PENDING"),
         )
         state.orderResponses[trackingId] = responseBody
+        captureResponse(interactions, TelecomsParty.OrderService, 200, responseBody, MediaType.APPLICATION_JSON_VALUE)
 
-        val callbackUrl = try {
-            mapper.readTree(body).get("notificationCallbackUrl")?.asText()
-        } catch (_: Exception) {
-            null
-        }
+        val callbackUrl = runCatching { mapper.readTree(body).get("notificationCallbackUrl")?.asText() }.getOrNull()
         if (callbackUrl != null) fireNotificationsAsync(orderRef, trackingId, callbackUrl, scenario)
 
         return ResponseEntity.ok().header("Content-Type", "application/json").body(responseBody)
@@ -166,6 +186,10 @@ internal class OpenNetworkStubController(
             for (status in statuses) {
                 Thread.sleep(delayMs)
                 val notification = OpenNetworkNotification(orderRef = orderRef, status = status)
+                val notificationBody = mapper.writeValueAsString(notification)
+                val interactions = registry.forTrackingId(trackingId)
+                captureNotification(interactions, callbackUrl, notificationBody)
+
                 val headers = HttpHeaders().apply {
                     contentType = MediaType.APPLICATION_JSON
                     set("X-Tracking-Id", trackingId)
@@ -175,5 +199,70 @@ internal class OpenNetworkStubController(
                 } catch (_: Exception) { /* test torn down */ }
             }
         }
+    }
+
+    private fun captureRequest(
+        interactions: CapturedInteractions,
+        targetService: TelecomsParty,
+        uri: String,
+        body: String,
+        contentType: String,
+    ) {
+        from(targetService)
+            .to(TelecomsParty.OpenNetwork)
+            .with(
+                HttpCapturedRequest(
+                    method = "POST",
+                    uri = uri,
+                    headers = mapOf("Content-Type" to listOf(contentType)),
+                    body = body,
+                ),
+                "HTTP POST $uri",
+            )
+            .applyTo(interactions)
+    }
+
+    private fun captureResponse(
+        interactions: CapturedInteractions,
+        targetService: TelecomsParty,
+        status: Int,
+        body: String,
+        contentType: String,
+    ) {
+        from(TelecomsParty.OpenNetwork)
+            .to(targetService)
+            .with(
+                HttpCapturedResponse(
+                    status = status,
+                    headers = mapOf("Content-Type" to listOf(contentType)),
+                    body = body,
+                ),
+                "HTTP $status",
+            )
+            .applyTo(interactions)
+    }
+
+    private fun captureNotification(
+        interactions: CapturedInteractions,
+        callbackUrl: String,
+        body: String,
+    ) {
+        from(TelecomsParty.OpenNetwork)
+            .to(TelecomsParty.OrderService)
+            .with(
+                HttpCapturedRequest(
+                    method = "POST",
+                    uri = callbackUrl,
+                    headers = mapOf("Content-Type" to listOf(MediaType.APPLICATION_JSON_VALUE)),
+                    body = body,
+                ),
+                "HTTP POST $callbackUrl",
+            )
+            .applyTo(interactions)
+    }
+
+    private fun responseFor(status: Int, body: String, contentType: String): ResponseEntity<String> {
+        val builder = if (status == 200) ResponseEntity.ok() else ResponseEntity.internalServerError()
+        return builder.header("Content-Type", contentType).body(body)
     }
 }
