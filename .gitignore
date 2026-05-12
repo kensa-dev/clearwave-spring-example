@@ -1,0 +1,14 @@
+.gradle/
+build/
+.idea/
+.kotlin/
+*.iml
+local.properties
+
+out/
+*.log
+.DS_Store
+
+# IDE workspace state we don't want to ship
+.vscode/
+*.swp

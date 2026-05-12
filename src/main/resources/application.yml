@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: clearwave
+
+suppliers:
+  open-network-url: ${OPEN_NETWORK_URL:http://localhost:8081}
+  fibre-vision-url: ${FIBRE_VISION_URL:http://localhost:8082}
+
+server:
+  port: 8080

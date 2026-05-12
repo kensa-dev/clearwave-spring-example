@@ -1,0 +1,44 @@
+[versions]
+kotlin = "2.3.21"
+# `kensa` pins the kensa-core / kensa-* runtime libraries on the test classpath.
+# `kensaPlugin` pins the build plugin. Independent since plugin v0.9.0.
+kensa = "0.8.1"
+kensaPlugin = "0.9.1"
+springBoot = "3.5.7"
+jackson = "2.21.0"
+kotest = "6.1.6"
+junit5 = "5.14.3"
+
+[libraries]
+kensa-spring-boot-starter = { module = "dev.kensa:kensa-spring-boot-starter", version.ref = "kensa" }
+kensa-spring-boot-starter-web = { module = "dev.kensa:kensa-spring-boot-starter-web", version.ref = "kensa" }
+kensa-assertions-kotest = { module = "dev.kensa:kensa-assertions-kotest", version.ref = "kensa" }
+kensa-assertions-hamcrest = { module = "dev.kensa:kensa-assertions-hamcrest", version.ref = "kensa" }
+kensa-kotest-test-support = { module = "dev.kensa:kensa-kotest-test-support", version.ref = "kensa" }
+kensa-kotest-test-support-json = { module = "dev.kensa:kensa-kotest-test-support-json", version.ref = "kensa" }
+kensa-kotest-test-support-xml = { module = "dev.kensa:kensa-kotest-test-support-xml", version.ref = "kensa" }
+
+spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-starter-web", version.ref = "springBoot" }
+spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test", version.ref = "springBoot" }
+
+jackson-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
+jackson-jsr310 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr310", version.ref = "jackson" }
+jackson-xml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-xml", version.ref = "jackson" }
+
+hamcrest = { module = "org.hamcrest:hamcrest", version = "3.0" }
+
+kotest-bom = { module = "io.kotest:kotest-bom", version.ref = "kotest" }
+kotest-assertions = { module = "io.kotest:kotest-assertions-core-jvm" }
+
+junit5-bom = { module = "org.junit:junit-bom", version.ref = "junit5" }
+junit5-api = { module = "org.junit.jupiter:junit-jupiter-api" }
+junit5-engine = { module = "org.junit.jupiter:junit-jupiter-engine" }
+junit5-params = { module = "org.junit.jupiter:junit-jupiter-params" }
+junit5-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-spring = { id = "org.jetbrains.kotlin.plugin.spring", version.ref = "kotlin" }
+spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
+spring-dependency-management = { id = "io.spring.dependency-management", version = "1.1.7" }
+kensa-gradle = { id = "dev.kensa.gradle-plugin", version.ref = "kensaPlugin" }

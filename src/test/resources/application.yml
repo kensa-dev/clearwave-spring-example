@@ -1,0 +1,7 @@
+kensa:
+  title-text: "Clearwave Telecoms — Spring Acceptance Tests"
+  setup-strategy: Grouped
+  auto-open-tab: SequenceDiagram
+  package-display: HideCommonPackages
+  package-display-root: "com.clearwave"
+  output-enabled: true
