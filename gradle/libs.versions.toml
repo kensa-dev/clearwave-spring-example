@@ -1,9 +1,9 @@
 [versions]
-kotlin = "2.3.21"
+kotlin = "2.4.0"
 # `kensa` pins the kensa-core / kensa-* runtime libraries on the test classpath.
 # `kensaPlugin` pins the build plugin. Independent since plugin v0.9.0.
-kensa = "0.8.1"
-kensaPlugin = "0.9.1"
+kensa = "0.8.11"
+kensaPlugin = "0.9.8"
 springBoot = "3.5.7"
 jackson = "2.21.0"
 kotest = "6.1.6"
