@@ -7,6 +7,7 @@ plugins {
 }
 
 kensa {
+    kensaCoreVersion = libs.versions.kensa.get()
     sourceSets = setOf("test")
     sourceTitles.put("test", "Clearwave Spring Acceptance Tests")
 }
