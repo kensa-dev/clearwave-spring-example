@@ -6,6 +6,11 @@ plugins {
     alias(libs.plugins.kensa.gradle)
 }
 
+// Kensa 0.9.0 is built against kotlinx-coroutines 1.11, but Spring Boot's BOM manages
+// coroutines down to 1.8.1, which fails Kensa's polling assertions at runtime with
+// NoSuchMethodError. Override the managed version until Boot catches up.
+extra["kotlin-coroutines.version"] = "1.11.0"
+
 kensa {
     kensaCoreVersion = libs.versions.kensa.get()
     sourceSets = setOf("test")
