@@ -15,12 +15,12 @@ Tests are written using the Kensa Given-When-Then DSL. Each test boots a real Sp
 ./gradlew test
 ```
 
-Runs `FeasibilityServiceTest` (4 scenarios) and `OrderServiceTest` (3 scenarios, including async supplier notifications). The Kensa HTML report is written to `build/kensa-site/`.
+Runs `FeasibilityServiceTest` (4 scenarios) and `OrderServiceTest` (3 scenarios, including async supplier notifications). The Kensa HTML report is written to `build/kensa-output`.
 
 To open the report:
 
 ```bash
-kensa --dir build/kensa-site
+kensa --dir build/kensa-output
 ```
 
 ## What this example demonstrates
